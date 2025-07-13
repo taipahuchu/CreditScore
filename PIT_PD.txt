@@ -569,13 +569,13 @@ proc print data=work.clusters noobs label split="*";
 	label RSquareRatio="1 - RSquare*Ratio";
 run;
 
-/* ===================================================== */
-/* Lesson 3, Practice 5
-Practice: Performing Variable Screening               */
-/* ===================================================== */
+/* ==========================================================================================================
 
-%let ex_reduced=
- bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe  hpi_band_woe 
+Practice: Performing Variable Screening
+No variable is removed since there are no varibales with a low rank of both spearmann rank and hoeffding D
+/* =========================================================================================================== */
+
+%let ex_reduced= bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe  hpi_band_woe 
  hpi_lag_band_woe income_band_woe ir_band_woe loan_term_band_woe mob_band_woe remaining_term_band_woe uer_band_woe uer_lag_band_woe;
 ods select none;
 ods output spearmancorr=work.spearman hoeffdingcorr=work.hoeffding;
@@ -643,16 +643,21 @@ proc sgplot data=work.correlations1;
 run;
 
 /* ===================================================== */
-/* Lesson 3, Practice 6
-Practice: Creating Empirical Logit Plots              */
+/* Practice: Creating Empirical Logit Plots              */
 /* ===================================================== */
 
 %global var;
 %let var=	gdp_band_woe;
 
-proc rank data=train2 groups=20 out=work.ranks;
+proc rank data=train2 groups=10 out=work.ranks;
 	var &var;
 	ranks bin;
+run;
+
+ods select all;
+
+proc print data=ranks (obs=10);
+	var &var bin;
 run;
 
 proc means data=work.ranks noprint nway;
@@ -686,6 +691,170 @@ run;
 
 title1;
 
+/* Switch the binned DDABal (B_DDABal) for the originally scaled
+DDABal input in the list of potential inputs. */
+%global screened;
+%let screened= bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe  hpi_band_woe 
+ hpi_lag_band_woe income_band_woe ir_band_woe loan_term_band_woe mob_band_woe remaining_term_band_woe uer_band_woe uer_lag_band_woe;
+
+/* ===================================================== */
+/*
+Demonstration: Detecting Interactions
+
+/* ===================================================== */
+title1 "P-Value for Entry and Retention";
+%global sl;
+
+proc sql;
+	select 1-probchi(log(sum(default_flag ge 0)), 1) into :sl from work.train2;
+quit;
+
+title1 "Interaction Detection using Forward Selection";
+
+proc logistic data=work.train2;
+	model default_flag(event='1')=&screened bureau_band_woe|cpi_band_woe|cpi_lag_band_woe|gdp_band_woe|gdp_lag_band_woe|hpi_band_woe|hpi_lag_band_woe
+|income_band_woe|ir_band_woe|loan_term_band_woe|mob_band_woe|remaining_term_band_woe|uer_band_woe|uer_lag_band_woe @2 
+		/ include=28 clodds=pl selection=forward slentry=&sl;
+run;
+
+/* ========================================================================================================================================
+
+Demonstration: Using Backward Elimination to Subset the  Variables
+
+/* ========================================================================================================================================== */
+
+
+title1 "Backward Selection for Variable Annuity Data Set";
+
+proc logistic data=work.train2;
+	model default_flag(event='1')=&screened gdp_lag_band_woe*hpi_band_woe 
+		gdp_band_woe*uer_band_woe gdp_lag_band_woe*uer_band_woe 
+		gdp_band_woe*income_band_woe gdp_band_woe*ir_band_woe 
+		gdp_lag_band_woe*ir_band_woe uer_band_woe*uer_lag_band_woe / clodds=pl 
+		selection=backward slstay=&sl hier=single fast;
+run;
+
+%let input = bureau_band_woe cpi_band_woe cpi_lag_band_woe 
+		gdp_band_woe gdp_lag_band_woe hpi_band_woe income_band_woe ir_band_woe 
+		remaining_term_band_woe uer_band_woe uer_lag_band_woe 
+		gdp_band_woe*ir_band_woe gdp_lag_band_woe*ir_band_woe 
+		uer_band_woe*uer_lag_band_woe;
+
+/* ===================================================== 
+Demonstration: Displaying Odds Ratios for Variables
+
+/* ===================================================== */
+title1 "Candidate Model for Variable Annuity Data Set";
+
+proc logistic data=work.train2;
+	model default_flag(event='1')=&input;
+run;
+
+/* =====================================================
+
+Demonstration: Using the Best-Subsets Selection Method
+
+/* ===================================================== */
+
+
+/* Run best subsets */
+title1 "Models Selected by Best Subsets Selection";
+
+proc logistic data=work.TRAIN2;
+	model default_flag(event='1')= &input / selection=score best=1;
+run;
+
+
+
+
+/* ===================================================== 
+
+   Demonstration: Using Fit Statistics to Select a Model
+
+/* ===================================================== */
+
+/* The fitstat macro generates model fit statistics for the
+   models selected in the all subsets selection. The macro
+   variable IM is set equal to the variable names in the
+   model_indx model while the macro variable IC is set 
+   equal to the number of variables in the model_indx model. */
+
+%macro fitstat(data=,target=,event=,inputs=,best=,priorevent=);
+
+ods select none;
+ods output bestsubsets=work.score;
+
+proc logistic data=&data namelen=50;
+   model &target(event="&event")=&inputs / selection=score best=&best;
+run;
+
+/* The names and number of variables are transferred to macro
+   variables using PROC SQL. */
+
+proc sql noprint;
+  select variablesinmodel into :inputs1 -  
+  from work.score;
+
+  select NumberOfVariables into :ic1 - 
+  from work.score;
+quit;
+
+%let lastindx=&SQLOBS;
+
+%do model_indx=1 %to &lastindx;
+
+%let im=&&inputs&model_indx;
+%let ic=&&ic&model_indx;
+
+ods output scorefitstat=work.stat&ic ;
+proc logistic data=&data namelen=50;
+  model &target(event="&event")=&im;
+  score data=&data out=work.scored fitstat
+        priorevent=&priorevent;
+run;
+
+proc datasets
+   library=work
+   nodetails
+   nolist;
+   delete scored;
+run;
+quit;
+
+%end;
+
+/* The data sets with the model fit statistics are 
+   concatenated and sorted by BIC. */ 
+
+data work.modelfit;
+   set work.stat1 - work.stat&lastindx;
+   model=_n_;
+run;
+
+%mend fitstat;
+
+%fitstat(data=train2,target=default_flag,event=1,inputs=&input,best=1,priorevent=0.02);
+
+
+proc sort data=work.modelfit;
+   by bic;
+run;
+
+title1 "Fit Statistics from Models selected from Best-Subsets";
+ods select all;
+proc print data=work.modelfit;
+   var model auc aic bic misclass adjrsquare brierscore;
+run;
+
+%global selected;
+proc sql;
+   select VariablesInModel into :selected
+   from work.score
+   where numberofvariables=13;
+quit;
+
+
+
 /* Hosmer Lemeshow Goodness - of - fit test */
 /* logistic regression model fits the data well. */
 proc logistic data=train2 descending;
@@ -694,6 +863,7 @@ proc logistic data=train2 descending;
 		gdp_lag_band_woe gdp_band_woe bureau_band_woe /lackfit rsq;
 	output out=train3 p=p_hat;
 run;
+
 
 /*
 log(p/1-p) = 2.2741 +  -21.2035 * remaining_term_band_ +  36.5747 * loan_term_band_woe +  -60.7317 * ir_band_woe
