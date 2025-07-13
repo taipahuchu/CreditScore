@@ -551,8 +551,10 @@ proc reg data=train2;
 		loan_term_band_woe mob_band_woe remaining_term_band_woe uer_band_woe 
 		uer_lag_band_woe /vif;
 	run;
-	ods select none;
-	ods output clusterquality=work.summary rsquared=work.clusters;
+
+ods select none;
+
+ods output clusterquality=work.summary rsquared=work.clusters;
 
 proc varclus data=train2 hi maxeigen=0.70;
 	var bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe 
@@ -569,18 +571,19 @@ proc print data=work.clusters noobs label split="*";
 	label RSquareRatio="1 - RSquare*Ratio";
 run;
 
-/* ===================================================== */
-/* Lesson 3, Practice 5
-Practice: Performing Variable Screening               */
-/* ===================================================== */
+/* ========================================================================================================== 
 
-%let ex_reduced=
- bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe  hpi_band_woe 
+Practice: Performing Variable Screening 
+No variable is removed since there are no varibales with a low rank of both spearmann rank and hoeffding D              
+/* =========================================================================================================== */
+
+%let ex_reduced= bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe  hpi_band_woe 
  hpi_lag_band_woe income_band_woe ir_band_woe loan_term_band_woe mob_band_woe remaining_term_band_woe uer_band_woe uer_lag_band_woe;
 ods select none;
+
 ods output spearmancorr=work.spearman hoeffdingcorr=work.hoeffding;
 
-proc corr data=train2 spearman hoeffding;
+proc corr data=train2 spearman hoeffding ;
 	var default_flag;
 	with &ex_reduced;
 run;
@@ -643,16 +646,20 @@ proc sgplot data=work.correlations1;
 run;
 
 /* ===================================================== */
-/* Lesson 3, Practice 6
-Practice: Creating Empirical Logit Plots              */
+/* Practice: Creating Empirical Logit Plots              */
 /* ===================================================== */
 
 %global var;
 %let var=	gdp_band_woe;
 
-proc rank data=train2 groups=20 out=work.ranks;
+proc rank data=train2 groups=10 out=work.ranks;
 	var &var;
 	ranks bin;
+run;
+
+ods select all;
+proc print data = ranks (obs=10) ;
+var &var bin;
 run;
 
 proc means data=work.ranks noprint nway;
@@ -685,6 +692,85 @@ proc sgplot data=work.bins;
 run;
 
 title1;
+
+
+
+
+
+
+/* Switch the binned DDABal (B_DDABal) for the originally scaled 
+   DDABal input in the list of potential inputs. */
+%global screened;
+%let screened= bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe  hpi_band_woe 
+ hpi_lag_band_woe income_band_woe ir_band_woe loan_term_band_woe mob_band_woe remaining_term_band_woe uer_band_woe uer_lag_band_woe;
+
+
+/* ===================================================== */
+/* 
+   Demonstration: Detecting Interactions
+                  
+/* ===================================================== */
+
+title1 "P-Value for Entry and Retention";
+
+%global sl;
+proc sql;
+   select 1-probchi(log(sum(default_flag ge 0)),1) into :sl
+   from work.train2;
+quit;
+
+title1 "Interaction Detection using Forward Selection";
+proc logistic data=work.train2;
+   model default_flag(event='1')= &screened bureau_band_woe|cpi_band_woe|cpi_lag_band_woe|gdp_band_woe|gdp_lag_band_woe|hpi_band_woe|hpi_lag_band_woe
+|income_band_woe|ir_band_woe|loan_term_band_woe|mob_band_woe|remaining_term_band_woe|uer_band_woe|uer_lag_band_woe @2 / include=28 clodds=pl 
+       selection=forward slentry=&sl;
+run;
+
+/* ======================================================================================================================================== 
+
+   Demonstration: Using Backward Elimination to Subset the  Variables
+
+/* ========================================================================================================================================== */
+
+title1 "Backward Selection for Variable Annuity Data Set";
+proc logistic data=work.train2;
+   model default_flag(event='1')= &screened gdp_lag_band_woe*hpi_band_woe gdp_band_woe*uer_band_woe gdp_lag_band_woe*uer_band_woe gdp_band_woe*income_band_woe
+   gdp_band_woe*ir_band_woe gdp_lag_band_woe*ir_band_woe uer_band_woe*uer_lag_band_woe   / clodds=pl 
+         selection=backward slstay=&sl hier=single fast;
+run;
+
+
+/* ===================================================== */
+/* Lesson 3, Section 5: l3d8c.sas
+   Demonstration: Displaying Odds Ratios for Variables
+   Involved in Interactions
+   [m643_5_o; derived from pmlr03d08.sas]               */
+/* ===================================================== */
+
+title1 "Candidate Model for Variable Annuity Data Set";
+
+proc logistic data=work.train2;
+   model default_flag(event='1')= 
+   bureau_band_woe cpi_band_woe cpi_lag_band_woe gdp_band_woe gdp_lag_band_woe hpi_band_woe income_band_woe ir_band_woe 
+   remaining_term_band_woe uer_band_woe uer_lag_band_woe gdp_band_woe*ir_band_woe  gdp_lag_band_woe*ir_band_woe uer_band_woe*uer_lag_band_woe ; 
+    run;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* Hosmer Lemeshow Goodness - of - fit test */
 /* logistic regression model fits the data well. */
