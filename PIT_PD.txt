@@ -29,7 +29,7 @@ proc means data=mydata2 n nmiss mean median mode min max;
 	var _numeric_;
 run;
 
-proc freq data=mydata2;
+proc freq data=mydata1;
 	table _char_;
 run;
 
@@ -864,6 +864,20 @@ proc logistic data=train2 descending;
 	output out=train3 p=p_hat;
 run;
 
+
+
+/* odds ratio */
+
+title1 "Logistic Regression Model for the Variable Annuity Data Set";
+
+proc logistic data=work.train2 plots(only maxpoints=none)=(effect(clband ));
+	model default_flag(event='1')=income_band_woe loan_term_band_woe gdp_lag_band_woe gdp_band_woe bureau_band_woe  / stb clodds=pl;
+		effectplot slicefit(sliceby =income_band_woe x=loan_term_band_woe) / noobs;
+	effectplot slicefit(sliceby=income_band_woe x=gdp_lag_band_woe ) / noobs;
+	code file="/home/u49308301/EPMLR51/pmlr_score.txt";
+run;
+
+title1;
 
 /*
 log(p/1-p) = 2.2741 +  -21.2035 * remaining_term_band_ +  36.5747 * loan_term_band_woe +  -60.7317 * ir_band_woe
