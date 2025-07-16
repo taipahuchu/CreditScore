@@ -5,7 +5,7 @@ proc import datafile=data dbms=xlsx out=mydata replace;
 	getnames=yes;
 RUN;
 
-/* Getting the left and right censored yearly data  */
+/* Getting the left and right censored yearly data  and the pd is 12 months ECL as of IFRS 9 */
 DATA mydata1;
 	SET mydata;
 	by cust_id year;
@@ -14,7 +14,7 @@ DATA mydata1;
 		output;
 RUN;
 
-%Let inputs = default_flag repayment_type loan_term mob remaining_term bureau_score_orig income gdp uer cpi hpi ir gdp_lag uer_lag cpi_lag hpi_lag;
+%Let inputs = default_flag loan_status  repayment_type loan_term mob remaining_term bureau_score_orig income gdp uer cpi hpi ir gdp_lag uer_lag cpi_lag hpi_lag;
 %put &inputs;
 
 proc contents data=mydata1 order=varnum;
@@ -29,17 +29,22 @@ proc means data=mydata2 n nmiss mean median mode min max;
 	var _numeric_;
 run;
 
-proc freq data=mydata1;
+proc freq data=mydata2;
 	table _char_;
 run;
+
+proc freq data= mydata2;
+table repayment_type*loan_status;
+RUN;
 
 proc univariate data=mydata2 plots;
 	var default_flag loan_term mob remaining_term bureau_score_orig income gdp uer 
 		cpi hpi ir gdp_lag uer_lag cpi_lag hpi_lag;
 run;
 
-/* Oversampling */
-proc freq data=mydata1;
+/* A combination of Undersampling and Oversampling */
+
+proc freq data=mydata2;
 	table default_flag;
 run;
 
@@ -48,13 +53,22 @@ data sample;
 	where default_flag=0;
 run;
 
-proc surveyselect data=sample method=srs reps=1 sampsize=1000 out=sampledata;
+proc surveyselect data=sample method=srs reps=1 sampsize=5000 out=sampledata;
 	id _all_;
 run;
 
+/* Oversampling the minority class the default flag = 1 */
+%macro default;
+%do i = 1 %to 5;
+	union all select 
+		* from mydata2 where default_flag=1
+%end;
+%mend ;
+
 Proc sql;
-	create table mydata3 as select * from sampledata (drop=replicate) union select 
-		* from mydata2 where default_flag=1;
+	create table mydata3 as select * from sampledata (drop=replicate) 
+    %default
+		;
 quit;
 
 proc print data=sampledata(obs=20);
@@ -96,6 +110,27 @@ DATA test;
 	set test;
 	drop selectionprob samplingweight selected;
 run;
+
+/* odds ratio */
+
+title1 "Logistic Regression Model for the Variable Annuity Data Set";
+
+proc logistic data=work.train plots(only maxpoints=none)=(effect(clband 
+		x=(ddabal depamt checks res)) oddsratio (type=horizontalstat));
+	class res (param=ref ref='S') dda (param=ref ref='0');
+	model ins(event='1')=dda ddabal dep depamt cashbk checks res / stb clodds=pl;
+	units ddabal=1000 depamt=1000 / default=1;
+	oddsratio 'Comparisons of Residential Classification' res / diff=all cl=pl;
+	effectplot slicefit(sliceby=dda x=ddabal) / noobs;
+	effectplot slicefit(sliceby=dda x=depamt) / noobs;
+	code file="/home/u49308301/EPMLR51/pmlr_score.txt";
+run;
+
+title1;
+
+
+
+
 
 /* Calculating Information Number and Weight of Evidence for all variables */
 /* Creating an empty table for the Information summary */
@@ -745,7 +780,7 @@ Demonstration: Displaying Odds Ratios for Variables
 
 /* ===================================================== */
 title1 "Candidate Model for Variable Annuity Data Set";
-
+ods select all;
 proc logistic data=work.train2;
 	model default_flag(event='1')=&input;
 run;
@@ -858,26 +893,12 @@ quit;
 /* Hosmer Lemeshow Goodness - of - fit test */
 /* logistic regression model fits the data well. */
 proc logistic data=train2 descending;
-	model Default_Flag (event="1")=remaining_term_band_woe 
-		loan_term_band_woe /*ir_band_woe /* hpi_lag_band_woe */
-		gdp_lag_band_woe gdp_band_woe bureau_band_woe /lackfit rsq;
+	model Default_Flag (event="1")= &selected /lackfit rsq;
 	output out=train3 p=p_hat;
 run;
 
 
 
-/* odds ratio */
-
-title1 "Logistic Regression Model for the Variable Annuity Data Set";
-
-proc logistic data=work.train2 plots(only maxpoints=none)=(effect(clband ));
-	model default_flag(event='1')=income_band_woe loan_term_band_woe gdp_lag_band_woe gdp_band_woe bureau_band_woe  / stb clodds=pl;
-		effectplot slicefit(sliceby =income_band_woe x=loan_term_band_woe) / noobs;
-	effectplot slicefit(sliceby=income_band_woe x=gdp_lag_band_woe ) / noobs;
-	code file="/home/u49308301/EPMLR51/pmlr_score.txt";
-run;
-
-title1;
 
 /*
 log(p/1-p) = 2.2741 +  -21.2035 * remaining_term_band_ +  36.5747 * loan_term_band_woe +  -60.7317 * ir_band_woe
