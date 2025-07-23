@@ -5,7 +5,7 @@ proc import datafile=data dbms=xlsx out=mydata replace;
 	getnames=yes;
 RUN;
 
-/* Getting the left and right censored yearly data  */
+/* Getting the left and right censored yearly data  and the pd is 12 months ECL as of IFRS 9 */
 DATA mydata1;
 	SET mydata;
 	by cust_id year;
@@ -14,7 +14,7 @@ DATA mydata1;
 		output;
 RUN;
 
-%Let inputs = default_flag repayment_type loan_term mob remaining_term bureau_score_orig income gdp uer cpi hpi ir gdp_lag uer_lag cpi_lag hpi_lag;
+%Let inputs = default_flag loan_status  repayment_type loan_term mob remaining_term bureau_score_orig income gdp uer cpi hpi ir gdp_lag uer_lag cpi_lag hpi_lag;
 %put &inputs;
 
 proc contents data=mydata1 order=varnum;
@@ -33,13 +33,17 @@ proc freq data=mydata2;
 	table _char_;
 run;
 
+proc freq data=mydata2;
+	table repayment_type*default_flag;
+RUN;
+
 proc univariate data=mydata2 plots;
 	var default_flag loan_term mob remaining_term bureau_score_orig income gdp uer 
 		cpi hpi ir gdp_lag uer_lag cpi_lag hpi_lag;
 run;
 
-/* Oversampling */
-proc freq data=mydata1;
+/* A combination of Undersampling and Oversampling */
+proc freq data=mydata2;
 	table default_flag;
 run;
 
@@ -48,19 +52,26 @@ data sample;
 	where default_flag=0;
 run;
 
-proc surveyselect data=sample method=srs reps=1 sampsize=1000 out=sampledata;
+proc surveyselect data=sample method=srs reps=1 sampsize=4000 out=sampledata;
 	id _all_;
 run;
 
+/* Oversampling the minority class the default flag = 1 */
+
+%macro default;
+	%do i=1 %to 5;
+		union all select * from mydata2 where default_flag=1 %end;
+%mend;
+
 Proc sql;
-	create table mydata3 as select * from sampledata (drop=replicate) union select 
-		* from mydata2 where default_flag=1;
+	create table mydata3 as select * from sampledata (drop=replicate) %default;
 quit;
 
 proc print data=sampledata(obs=20);
 run;
 
 /* Splitting our dataset into development and validation datasets */
+
 proc sort data=mydata3 out=mydata3;
 	by default_flag;
 run;
@@ -96,6 +107,117 @@ DATA test;
 	set test;
 	drop selectionprob samplingweight selected;
 run;
+
+/* odds ratio */
+
+
+title1 "Logistic Regression Model for the PD  Data Set";
+
+proc logistic data=work.train plots(only maxpoints=none)=(effect(clband x=(loan_term gdp repayment_type)) oddsratio (type=horizontalstat));
+		class  repayment_type (param=ref ref='Repayment') ;
+	model default_flag(event='1')= repayment_type loan_term gdp/ lackfit stb clodds=pl ;
+	units loan_term=12 / default=1;
+	oddsratio 'Comparisons of loan status' default_flag / diff=all cl=pl;
+		effectplot slicefit(sliceby=repayment_type x=loan_term) / noobs;
+		effectplot slicefit(sliceby=repayment_type x=gdp) / noobs;
+		 score data = test out=scored1;
+run;
+
+title1;
+
+title1 "Predicted Probabilities from Scored Data Set";
+proc print data=work.scored1(obs=10);
+   var p_1 default_flag repayment_type loan_term gdp;
+  RUN;
+title1 "Mean of the predicted probabilites from the PD data set";
+
+proc means data = scored1 mean nolabels;
+var p_1;
+run;
+
+proc means data = train mean nolabels;
+var default_flag;
+run;
+
+/* ===
+/* ===================================================== */
+/* 
+   Demonstration: Scoring New Cases                               
+                */
+/* ===================================================== */
+
+/* Score a new data set with one run of the LOGISTIC procedure with the 
+   SCORE statement.  */
+ 
+proc logistic data=work.train noprint;
+   class res (param=ref ref='S');
+   model ins(event='1')= res dda ddabal dep depamt cashbk checks;
+   score data = pmlr.new out=work.scored1;
+run;
+
+title1 "Predicted Probabilities from Scored Data Set";
+proc print data=work.scored1(obs=10);
+   var p_1 dda ddabal dep depamt cashbk checks res;
+run;
+
+title1 "Mean of Predicted Probabilities from Scored Data Set";
+proc means data=work.scored1 mean nolabels;
+   var p_1;
+run;
+
+/* Score a new data set with the OUTMODEL= amd INMODEL= options */ 
+
+proc logistic data=work.train outmodel=work.scoredata noprint;
+   class res (param=ref ref='S');
+   model ins(event='1')= res dda ddabal dep depamt cashbk checks;
+run;
+
+proc logistic inmodel=work.scoredata noprint;
+   score data = pmlr.new out=work.scored2;
+run;
+
+title1 "Predicted Probabilities from Scored Data Set";
+proc print data=work.scored2(obs=10);
+   var p_1 dda ddabal dep depamt cashbk checks res;
+run;
+
+/* Score a new data set with the CODE Statement  */
+
+proc logistic data=work.train noprint;
+   class res (param=ref ref='S');
+   model ins(event='1')= res dda ddabal dep depamt cashbk checks;
+   code file="/home/u49308301/EPMLR51/pmlr_score.txt";
+run;
+
+data work.scored3;
+   set pmlr.new;
+   %include "/home/u49308301/EPMLR51/pmlr_score.txt";
+run;
+
+title1 "Predicted Probabilities from Scored Data Set";
+proc print data=work.scored3(obs=10);
+   var p_ins1 dda ddabal dep depamt cashbk checks res;
+run;
+title1 ;
+
+
+
+/* ===================================================== */
+/*
+Scoring New Cases
+/* ===================================================== */
+data work.scored3;
+	set work.test;
+	%include "/home/u49308301/EPMLR51/pmlr_score.txt";
+run;
+
+title1 "Predicted Probabilities from Scored Data Set";
+
+proc print data=work.scored3(obs=10);
+	var p_default_flag loan_status repayment_type loan_term;
+run;
+
+title1;
 
 /* Calculating Information Number and Weight of Evidence for all variables */
 /* Creating an empty table for the Information summary */
@@ -722,8 +844,6 @@ run;
 Demonstration: Using Backward Elimination to Subset the  Variables
 
 /* ========================================================================================================================================== */
-
-
 title1 "Backward Selection for Variable Annuity Data Set";
 
 proc logistic data=work.train2;
@@ -740,11 +860,12 @@ run;
 		gdp_band_woe*ir_band_woe gdp_lag_band_woe*ir_band_woe 
 		uer_band_woe*uer_lag_band_woe;
 
-/* ===================================================== 
+/* =====================================================
 Demonstration: Displaying Odds Ratios for Variables
 
 /* ===================================================== */
 title1 "Candidate Model for Variable Annuity Data Set";
+ods select all;
 
 proc logistic data=work.train2;
 	model default_flag(event='1')=&input;
@@ -755,115 +876,95 @@ run;
 Demonstration: Using the Best-Subsets Selection Method
 
 /* ===================================================== */
-
-
 /* Run best subsets */
 title1 "Models Selected by Best Subsets Selection";
 
 proc logistic data=work.TRAIN2;
-	model default_flag(event='1')= &input / selection=score best=1;
+	model default_flag(event='1')=&input / selection=score best=1;
 run;
 
+/* =====================================================
 
-
-
-/* ===================================================== 
-
-   Demonstration: Using Fit Statistics to Select a Model
+Demonstration: Using Fit Statistics to Select a Model
 
 /* ===================================================== */
-
 /* The fitstat macro generates model fit statistics for the
-   models selected in the all subsets selection. The macro
-   variable IM is set equal to the variable names in the
-   model_indx model while the macro variable IC is set 
-   equal to the number of variables in the model_indx model. */
+models selected in the all subsets selection. The macro
+variable IM is set equal to the variable names in the
+model_indx model while the macro variable IC is set
+equal to the number of variables in the model_indx model. */
+%macro fitstat(data=, target=, event=, inputs=, best=, priorevent=);
+	ods select none;
+	ods output bestsubsets=work.score;
 
-%macro fitstat(data=,target=,event=,inputs=,best=,priorevent=);
+	proc logistic data=&data namelen=50;
+		model &target(event="&event")=&inputs / selection=score best=&best;
+	run;
 
-ods select none;
-ods output bestsubsets=work.score;
-
-proc logistic data=&data namelen=50;
-   model &target(event="&event")=&inputs / selection=score best=&best;
-run;
-
-/* The names and number of variables are transferred to macro
-   variables using PROC SQL. */
-
-proc sql noprint;
-  select variablesinmodel into :inputs1 -  
+	/* The names and number of variables are transferred to macro
+	variables using PROC SQL. */
+	proc sql noprint;
+		select variablesinmodel into :inputs1 -  
   from work.score;
-
-  select NumberOfVariables into :ic1 - 
+		select NumberOfVariables into :ic1 - 
   from work.score;
-quit;
+	quit;
 
-%let lastindx=&SQLOBS;
+	%let lastindx=&SQLOBS;
 
-%do model_indx=1 %to &lastindx;
+	%do model_indx=1 %to &lastindx;
+		%let im=&&inputs&model_indx;
+		%let ic=&&ic&model_indx;
+		ods output scorefitstat=work.stat&ic;
 
-%let im=&&inputs&model_indx;
-%let ic=&&ic&model_indx;
+		proc logistic data=&data namelen=50;
+			model &target(event="&event")=&im;
+			score data=&data out=work.scored fitstat priorevent=&priorevent;
+		run;
 
-ods output scorefitstat=work.stat&ic ;
-proc logistic data=&data namelen=50;
-  model &target(event="&event")=&im;
-  score data=&data out=work.scored fitstat
-        priorevent=&priorevent;
-run;
+		proc datasets library=work nodetails nolist;
+			delete scored;
+			run;
+		quit;
 
-proc datasets
-   library=work
-   nodetails
-   nolist;
-   delete scored;
-run;
-quit;
+	%end;
 
-%end;
-
-/* The data sets with the model fit statistics are 
-   concatenated and sorted by BIC. */ 
-
-data work.modelfit;
-   set work.stat1 - work.stat&lastindx;
-   model=_n_;
-run;
+	/* The data sets with the model fit statistics are
+	concatenated and sorted by BIC. */
+	data work.modelfit;
+		set work.stat1 - work.stat&lastindx;
+		model=_n_;
+	run;
 
 %mend fitstat;
 
-%fitstat(data=train2,target=default_flag,event=1,inputs=&input,best=1,priorevent=0.02);
-
+%fitstat(data=train2, target=default_flag, event=1, inputs=&input, best=1, 
+	priorevent=0.02);
 
 proc sort data=work.modelfit;
-   by bic;
+	by bic;
 run;
 
 title1 "Fit Statistics from Models selected from Best-Subsets";
 ods select all;
+
 proc print data=work.modelfit;
-   var model auc aic bic misclass adjrsquare brierscore;
+	var model auc aic bic misclass adjrsquare brierscore;
 run;
 
 %global selected;
+
 proc sql;
-   select VariablesInModel into :selected
-   from work.score
-   where numberofvariables=13;
+	select VariablesInModel into :selected from work.score where 
+		numberofvariables=13;
 quit;
-
-
 
 /* Hosmer Lemeshow Goodness - of - fit test */
 /* logistic regression model fits the data well. */
 proc logistic data=train2 descending;
-	model Default_Flag (event="1")=remaining_term_band_woe 
-		loan_term_band_woe /*ir_band_woe /* hpi_lag_band_woe */
-		gdp_lag_band_woe gdp_band_woe bureau_band_woe /lackfit rsq;
+	model Default_Flag (event="1")=&selected /lackfit rsq;
 	output out=train3 p=p_hat;
 run;
-
 
 /*
 log(p/1-p) = 2.2741 +  -21.2035 * remaining_term_band_ +  36.5747 * loan_term_band_woe +  -60.7317 * ir_band_woe
